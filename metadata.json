@@ -1,0 +1,6 @@
+{
+  "name": "Nwezh",
+  "description": "A masjid in your pocket — calm, accurate Islamic prayer times and reminders.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
