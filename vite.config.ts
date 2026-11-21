@@ -5,8 +5,31 @@ import path from 'path';
 import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
+function resolveFallbackVapidPublicKey(): string {
+  if (process.env.VITE_VAPID_PUBLIC_KEY) return process.env.VITE_VAPID_PUBLIC_KEY;
+  if (process.env.VAPID_PUBLIC_KEY) return process.env.VAPID_PUBLIC_KEY;
+  try {
+    const vapidPath = path.resolve(import.meta.dirname, '.nwezh-data', 'vapid.json');
+    if (fs.existsSync(vapidPath)) {
+      const parsed = JSON.parse(fs.readFileSync(vapidPath, 'utf8')) as {
+        publicKey?: string;
+      };
+      if (parsed.publicKey) return parsed.publicKey;
+    }
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
 export default defineConfig(() => {
+  const fallbackVapidPublicKey = resolveFallbackVapidPublicKey();
   return {
+    define: {
+      'import.meta.env.VITE_VAPID_PUBLIC_KEY': JSON.stringify(
+        fallbackVapidPublicKey
+      ),
+    },
     plugins: [
       react(),
       tailwindcss(),

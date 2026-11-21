@@ -1,5 +1,9 @@
 import {useCallback, useEffect, useState} from 'react';
-import type {PrayerSettings} from '../../shared/prayerEngine';
+import {
+  getPrayerArrivalCopy,
+  type PrayerName,
+  type PrayerSettings,
+} from '../../shared/prayerEngine';
 
 export type PushSupportState =
   | 'supported'
@@ -31,30 +35,133 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
   return outputArray;
 }
 
-async function getReadyRegistrationWithTimeout(
-  timeoutMs = 4500
-): Promise<ServiceWorkerRegistration> {
+async function getReadyRegistration(
+  timeoutMs = 5000
+): Promise<ServiceWorkerRegistration | null> {
   if (!('serviceWorker' in navigator)) {
-    throw new Error('Service Worker is not supported in this browser.');
+    return null;
   }
 
-  const existing = await navigator.serviceWorker.getRegistration();
-  if (existing?.active) return existing;
+  try {
+    const existing = await navigator.serviceWorker.getRegistration();
+    if (existing?.active) return existing;
 
-  return await Promise.race([
-    navigator.serviceWorker.ready,
-    new Promise<never>((_, reject) =>
-      window.setTimeout(
-        () =>
-          reject(
-            new Error(
-              'Service Worker is not active in this view. Try opening Nwezh directly in Safari or Chrome.'
-            )
-          ),
-        timeoutMs
-      )
-    ),
-  ]);
+    const ready = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise<null>((resolve) =>
+        window.setTimeout(() => resolve(null), timeoutMs)
+      ),
+    ]);
+    return ready || existing || null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchJsonSafely<T>(
+  input: string,
+  init?: RequestInit
+): Promise<{ok: boolean; status: number; data: T | null}> {
+  try {
+    const res = await fetch(input, {
+      cache: 'no-store',
+      credentials: 'same-origin',
+      ...init,
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.toLowerCase().includes('application/json')) {
+      return {ok: false, status: res.status, data: null};
+    }
+    const data = (await res.json()) as T;
+    return {ok: res.ok, status: res.status, data};
+  } catch {
+    return {ok: false, status: 0, data: null};
+  }
+}
+
+async function resolveVapidPublicKey(): Promise<string> {
+  const res = await fetchJsonSafely<{publicKey?: string}>(
+    '/api/push/vapid-public-key'
+  );
+  if (res.ok && res.data?.publicKey) {
+    return res.data.publicKey;
+  }
+  const bakedKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+  if (typeof bakedKey === 'string' && bakedKey.length > 0) {
+    return bakedKey;
+  }
+  throw new Error('Could not reach notification server.');
+}
+
+function buildSubscribePayload(
+  sub: PushSubscription,
+  settings: PrayerSettings,
+  enabledOverride?: boolean
+) {
+  const json = sub.toJSON();
+  return {
+    endpoint: json.endpoint,
+    keys: json.keys,
+    location: settings.location,
+    method: settings.method,
+    asrMethod: settings.asrMethod,
+    highLatitudeRule: settings.highLatitudeRule,
+    adjustments: settings.adjustments,
+    timeFormat: settings.timeFormat,
+    language: settings.language,
+    enabled:
+      typeof enabledOverride === 'boolean'
+        ? enabledOverride
+        : settings.notifications.enabled,
+    prayers: settings.notifications.prayers,
+    silent: settings.notifications.sound === 'off',
+  };
+}
+
+export async function showDeviceNotification(
+  settings: PrayerSettings,
+  prayer: PrayerName,
+  tag: string,
+  registration?: ServiceWorkerRegistration | null
+): Promise<boolean> {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return false;
+  }
+  if (Notification.permission !== 'granted') {
+    return false;
+  }
+
+  const body = getPrayerArrivalCopy(prayer, settings.language);
+  const silent = settings.notifications.sound === 'off';
+  const reg = registration ?? (await getReadyRegistration(2500));
+
+  if (reg && typeof reg.showNotification === 'function') {
+    try {
+      await reg.showNotification('Nwezh', {
+        body,
+        icon: '/pwa-192x192.png',
+        badge: '/favicon-32x32.png',
+        tag,
+        silent,
+        data: {url: '/', prayer},
+      });
+      return true;
+    } catch {
+      // Fall through to standard Notification API
+    }
+  }
+
+  try {
+    new Notification('Nwezh', {
+      body,
+      icon: '/pwa-192x192.png',
+      tag,
+      silent,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function usePushNotifications(
@@ -62,9 +169,9 @@ export function usePushNotifications(
   isIOS: boolean
 ): PushStatus {
   const [support, setSupport] = useState<PushSupportState>('unsupported');
-  const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>(
-    'unsupported'
-  );
+  const [permission, setPermission] = useState<
+    NotificationPermission | 'unsupported'
+  >('unsupported');
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +182,6 @@ export function usePushNotifications(
 
     const hasNotification = 'Notification' in window;
     const hasSW = 'serviceWorker' in navigator;
-    const hasPush = 'PushManager' in window;
 
     if (isIOS && !isStandalone) {
       setSupport('ios-needs-install');
@@ -84,7 +190,7 @@ export function usePushNotifications(
       return;
     }
 
-    if (!hasNotification || !hasSW || !hasPush) {
+    if (!hasNotification) {
       setSupport('unsupported');
       setPermission('unsupported');
       setIsSubscribed(false);
@@ -93,6 +199,11 @@ export function usePushNotifications(
 
     setSupport('supported');
     setPermission(Notification.permission);
+
+    if (!hasSW || !('PushManager' in window)) {
+      setIsSubscribed(false);
+      return;
+    }
 
     try {
       const reg = await navigator.serviceWorker.getRegistration();
@@ -121,29 +232,62 @@ export function usePushNotifications(
         const json = sub.toJSON();
         if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return;
 
-        await fetch('/api/push/subscribe', {
+        await fetchJsonSafely('/api/push/subscribe', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            endpoint: json.endpoint,
-            keys: json.keys,
-            location: settings.location,
-            method: settings.method,
-            asrMethod: settings.asrMethod,
-            highLatitudeRule: settings.highLatitudeRule,
-            adjustments: settings.adjustments,
-            timeFormat: settings.timeFormat,
-            language: settings.language,
-            enabled: settings.notifications.enabled,
-            prayers: settings.notifications.prayers,
-            silent: settings.notifications.sound === 'off',
-          }),
+          body: JSON.stringify(buildSubscribePayload(sub, settings)),
         });
       } catch {
         // Offline sync will retry when online
       }
     },
     [support]
+  );
+
+  const subscribeWithServer = useCallback(
+    async (
+      settings: PrayerSettings,
+      forceResubscribe = false
+    ): Promise<{
+      registration: ServiceWorkerRegistration | null;
+      sub: PushSubscription | null;
+      savedToServer: boolean;
+    }> => {
+      const registration = await getReadyRegistration(5000);
+      if (!registration || !('pushManager' in registration)) {
+        return {registration, sub: null, savedToServer: false};
+      }
+
+      let sub = await registration.pushManager.getSubscription();
+      if (forceResubscribe && sub) {
+        await sub.unsubscribe().catch(() => {});
+        sub = null;
+      }
+
+      if (!sub) {
+        const publicKey = await resolveVapidPublicKey();
+        sub = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey),
+        });
+      }
+
+      const saveRes = await fetchJsonSafely<{ok?: boolean}>(
+        '/api/push/subscribe',
+        {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(buildSubscribePayload(sub, settings, true)),
+        }
+      );
+
+      return {
+        registration,
+        sub,
+        savedToServer: Boolean(saveRes.ok && saveRes.data?.ok),
+      };
+    },
+    []
   );
 
   const enableAndSubscribe = useCallback(
@@ -159,13 +303,16 @@ export function usePushNotifications(
       }
 
       if (support !== 'supported') {
-        setError('This browser does not support Web Push notifications.');
+        setError('This browser does not support notifications.');
         return false;
       }
 
       setIsBusy(true);
       try {
-        const perm = await Notification.requestPermission();
+        const perm =
+          Notification.permission === 'granted'
+            ? 'granted'
+            : await Notification.requestPermission();
         setPermission(perm);
         if (perm !== 'granted') {
           setError(
@@ -174,59 +321,27 @@ export function usePushNotifications(
           return false;
         }
 
-        const registration = await getReadyRegistrationWithTimeout(4500);
-        let sub = await registration.pushManager.getSubscription();
-
-        if (!sub) {
-          const keyRes = await fetch('/api/push/vapid-public-key');
-          if (!keyRes.ok) {
-            throw new Error('Could not reach notification server.');
-          }
-          const {publicKey} = (await keyRes.json()) as {publicKey: string};
-          sub = await registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: urlBase64ToUint8Array(publicKey),
-          });
+        try {
+          const {sub, savedToServer} = await subscribeWithServer(settings);
+          setIsSubscribed(Boolean(sub && savedToServer));
+        } catch {
+          // Local on-device notifications remain available while permission is granted
+          setIsSubscribed(false);
         }
 
-        const json = sub.toJSON();
-        const saveRes = await fetch('/api/push/subscribe', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            endpoint: json.endpoint,
-            keys: json.keys,
-            location: settings.location,
-            method: settings.method,
-            asrMethod: settings.asrMethod,
-            highLatitudeRule: settings.highLatitudeRule,
-            adjustments: settings.adjustments,
-            timeFormat: settings.timeFormat,
-            language: settings.language,
-            enabled: true,
-            prayers: settings.notifications.prayers,
-            silent: settings.notifications.sound === 'off',
-          }),
-        });
-
-        if (!saveRes.ok) {
-          throw new Error('Failed to save push preferences.');
-        }
-
-        setIsSubscribed(true);
         return true;
       } catch (err) {
         setError(
           err instanceof Error
             ? err.message
-            : 'Unable to activate push notifications right now.'
+            : 'Unable to activate notifications right now.'
         );
         return false;
       } finally {
         setIsBusy(false);
       }
     },
-    [support]
+    [subscribeWithServer, support]
   );
 
   const disableAndUnsubscribe = useCallback(async () => {
@@ -238,12 +353,12 @@ export function usePushNotifications(
         const reg = await navigator.serviceWorker.getRegistration();
         const sub = reg ? await reg.pushManager.getSubscription() : null;
         if (sub) {
-          await fetch('/api/push/unsubscribe', {
+          await fetchJsonSafely('/api/push/unsubscribe', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({endpoint: sub.endpoint}),
-          }).catch(() => {});
-          await sub.unsubscribe();
+          });
+          await sub.unsubscribe().catch(() => {});
         }
       }
       setIsSubscribed(false);
@@ -256,36 +371,104 @@ export function usePushNotifications(
     async (settings: PrayerSettings) => {
       setError(null);
       setTestMessage(null);
+
+      if (support === 'ios-needs-install') {
+        setError(
+          'On iPhone and iPad, add Nwezh to your Home Screen first to enable prayer notifications.'
+        );
+        return;
+      }
+
+      if (support !== 'supported') {
+        setError('This browser does not support notifications.');
+        return;
+      }
+
       setIsBusy(true);
       try {
-        if (support !== 'supported') {
-          setError('Push notifications require an installed PWA or supported browser.');
+        const perm =
+          Notification.permission === 'granted'
+            ? 'granted'
+            : await Notification.requestPermission();
+        setPermission(perm);
+
+        if (perm !== 'granted') {
+          setError(
+            'Notification permission was not granted. Please allow notifications in your browser or device Settings.'
+          );
           return;
         }
-        const registration = await getReadyRegistrationWithTimeout(4500);
-        let sub = await registration.pushManager.getSubscription();
-        if (!sub) {
-          const ok = await enableAndSubscribe(settings);
-          if (!ok) return;
-          sub = await registration.pushManager.getSubscription();
+
+        let registration: ServiceWorkerRegistration | null = null;
+
+        // 1. Try true background Web Push end-to-end
+        try {
+          const subscribed = await subscribeWithServer(settings);
+          registration = subscribed.registration;
+
+          if (subscribed.sub && subscribed.savedToServer) {
+            const json = subscribed.sub.toJSON();
+            let pushRes = await fetchJsonSafely<{ok?: boolean; error?: string}>(
+              '/api/push/test',
+              {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                  endpoint: json.endpoint,
+                  keys: json.keys,
+                  silent: settings.notifications.sound === 'off',
+                  language: settings.language,
+                }),
+              }
+            );
+
+            // Retry once with a fresh push subscription if the push token expired (404/410/502)
+            if (!pushRes.ok && (pushRes.status === 404 || pushRes.status === 502)) {
+              const refreshed = await subscribeWithServer(settings, true);
+              registration = refreshed.registration;
+              if (refreshed.sub && refreshed.savedToServer) {
+                const refreshedJson = refreshed.sub.toJSON();
+                pushRes = await fetchJsonSafely<{ok?: boolean; error?: string}>(
+                  '/api/push/test',
+                  {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                      endpoint: refreshedJson.endpoint,
+                      keys: refreshedJson.keys,
+                      silent: settings.notifications.sound === 'off',
+                      language: settings.language,
+                    }),
+                  }
+                );
+              }
+            }
+
+            if (pushRes.ok && pushRes.data?.ok) {
+              setIsSubscribed(true);
+              setTestMessage('Test push notification sent.');
+              return;
+            }
+          }
+        } catch {
+          // Fall through to on-device Service Worker notification
         }
-        if (!sub) return;
-        const json = sub.toJSON();
-        const res = await fetch('/api/push/test', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            endpoint: json.endpoint,
-            keys: json.keys,
-            silent: settings.notifications.sound === 'off',
-            language: settings.language,
-          }),
-        });
-        if (!res.ok) {
-          const data = (await res.json().catch(() => ({}))) as {error?: string};
-          throw new Error(data.error || 'Could not deliver test notification.');
+
+        // 2. Fallback: deliver a real OS notification via Service Worker / Notification API
+        const shownLocally = await showDeviceNotification(
+          settings,
+          'asr',
+          `nwezh-test-${Date.now()}`,
+          registration
+        );
+
+        if (shownLocally) {
+          setTestMessage('Test notification delivered on this device.');
+        } else {
+          setError(
+            'Your browser blocked showing notifications in this view. Open Nwezh directly in Safari or Chrome, or install it to your Home Screen.'
+          );
         }
-        setTestMessage('Test reminder sent.');
       } catch (err) {
         setError(
           err instanceof Error ? err.message : 'Could not send test notification.'
@@ -294,7 +477,7 @@ export function usePushNotifications(
         setIsBusy(false);
       }
     },
-    [enableAndSubscribe, support]
+    [subscribeWithServer, support]
   );
 
   return {

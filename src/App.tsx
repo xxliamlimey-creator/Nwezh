@@ -25,7 +25,10 @@ import {OnboardingFlow} from './components/OnboardingFlow';
 import {SettingsScreen} from './components/SettingsScreen';
 import {useOnlineStatus} from './hooks/useOnlineStatus';
 import {usePWAInstall} from './hooks/usePWAInstall';
-import {usePushNotifications} from './hooks/usePushNotifications';
+import {
+  showDeviceNotification,
+  usePushNotifications,
+} from './hooks/usePushNotifications';
 import {getLanguageMeta, getTranslations} from './i18n/translations';
 import {
   playPrayerCue,
@@ -149,12 +152,19 @@ export default function App() {
         }
         const message = getPrayerArrivalCopy(prayer, settings.language);
         setForegroundBanner(message);
+        if (!pushStatus.isSubscribed) {
+          void showDeviceNotification(
+            settings,
+            prayer,
+            `nwezh-${dateKey}-${prayer}`
+          );
+        }
         window.setTimeout(() => {
           setForegroundBanner((prev) => (prev === message ? null : prev));
         }, 12000);
       }
     }
-  }, [now, onboarded, settings]);
+  }, [now, onboarded, pushStatus.isSubscribed, settings]);
 
   const handleEnterWebApp = () => {
     setEnteredWebApp(true);

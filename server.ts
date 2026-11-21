@@ -111,6 +111,7 @@ function saveSubscriptions(map: Map<string, StoredSubscription>) {
 }
 
 const vapidKeys = loadOrGenerateVapidKeys();
+process.env.VITE_VAPID_PUBLIC_KEY = vapidKeys.publicKey;
 const vapidSubject = process.env.VAPID_SUBJECT || 'mailto:reminders@nwezh.app';
 webpush.setVapidDetails(vapidSubject, vapidKeys.publicKey, vapidKeys.privateKey);
 
@@ -209,6 +210,11 @@ async function startServer() {
 
   app.get('/api/health', (_req, res) => {
     res.json({ok: true, subscribers: subscriptions.size});
+  });
+
+  app.use('/api/push', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
   });
 
   app.get('/api/push/vapid-public-key', (_req, res) => {
