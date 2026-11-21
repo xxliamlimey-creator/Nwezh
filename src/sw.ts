@@ -106,7 +106,28 @@ self.addEventListener('push', (event: PushEvent) => {
     },
   };
 
-  event.waitUntil(self.registration.showNotification(title, options));
+  const isTestPush = tag.startsWith('nwezh-test');
+  const notifyClients =
+    !payload.silent && !isTestPush
+      ? self.clients
+          .matchAll({type: 'window', includeUncontrolled: true})
+          .then((clientList) => {
+            for (const client of clientList) {
+              client.postMessage({
+                type: 'NWEZH_PUSH_RECEIVED',
+                prayer: payload.prayer || '',
+                tag,
+              });
+            }
+          })
+      : Promise.resolve();
+
+  event.waitUntil(
+    Promise.all([
+      self.registration.showNotification(title, options),
+      notifyClients,
+    ])
+  );
 });
 
 self.addEventListener('notificationclick', (event: NotificationEvent) => {

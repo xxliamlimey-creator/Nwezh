@@ -21,10 +21,14 @@ export function detectDeviceCoordinates(): Promise<DetectedLocationResult> {
       async (pos) => {
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
-        const timezone =
-          Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-
         const nearest = findNearestCity(lat, lng);
+        const browserTz =
+          Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+        let timezone =
+          browserTz && (browserTz !== 'UTC' || Math.abs(lng) < 12)
+            ? browserTz
+            : nearest.city.timezone;
+
         let name =
           nearest.distanceKm < 60
             ? nearest.city.name
@@ -41,11 +45,15 @@ export function detectDeviceCoordinates(): Promise<DetectedLocationResult> {
             if (res.ok) {
               const data = (await res.json()) as {
                 city?: {name: string; country: string; countryCode: string} | null;
+                timezone?: string;
               };
               if (data.city?.name) {
                 name = data.city.name;
                 country = data.city.country || country;
                 countryCode = data.city.countryCode || countryCode;
+              }
+              if (data.timezone) {
+                timezone = data.timezone;
               }
             }
           } catch {

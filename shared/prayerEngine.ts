@@ -423,16 +423,17 @@ export function formatTimeInZone(
   }
 }
 
-export function computeDaySchedule(
-  referenceDate: Date,
+function computeScheduleForYMD(
+  year: number,
+  month: number,
+  day: number,
   settings: Pick<
     PrayerSettings,
     'location' | 'method' | 'asrMethod' | 'highLatitudeRule' | 'adjustments' | 'timeFormat'
   >
 ): DayPrayerSchedule {
   const {lat, lng, timezone} = settings.location;
-  const parts = getTimePartsInZone(referenceDate, timezone);
-  const calcDate = new Date(parts.year, parts.month - 1, parts.day, 12, 0, 0);
+  const calcDate = new Date(year, month - 1, day, 12, 0, 0);
 
   const coordinates = new Coordinates(lat, lng);
   const params = getCalculationParams(
@@ -465,10 +466,35 @@ export function computeDaySchedule(
   }));
 
   return {
-    dateKey: `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`,
+    dateKey: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
     entries,
     timesMap,
   };
+}
+
+function shiftCalendarDay(
+  year: number,
+  month: number,
+  day: number,
+  deltaDays: number
+): {year: number; month: number; day: number} {
+  const shifted = new Date(Date.UTC(year, month - 1, day + deltaDays, 12, 0, 0));
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+  };
+}
+
+export function computeDaySchedule(
+  referenceDate: Date,
+  settings: Pick<
+    PrayerSettings,
+    'location' | 'method' | 'asrMethod' | 'highLatitudeRule' | 'adjustments' | 'timeFormat'
+  >
+): DayPrayerSchedule {
+  const parts = getTimePartsInZone(referenceDate, settings.location.timezone);
+  return computeScheduleForYMD(parts.year, parts.month, parts.day, settings);
 }
 
 export type PrayerRowStatus = 'passed' | 'current' | 'next' | 'upcoming';
@@ -508,11 +534,12 @@ export function getNextPrayerInfo(
     'location' | 'method' | 'asrMethod' | 'highLatitudeRule' | 'adjustments' | 'timeFormat'
   >
 ): NextPrayerSummary {
-  const today = computeDaySchedule(now, settings);
-  const tomorrowRef = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  const tomorrow = computeDaySchedule(tomorrowRef, settings);
-  const yesterdayRef = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const yesterday = computeDaySchedule(yesterdayRef, settings);
+  const parts = getTimePartsInZone(now, settings.location.timezone);
+  const today = computeScheduleForYMD(parts.year, parts.month, parts.day, settings);
+  const tom = shiftCalendarDay(parts.year, parts.month, parts.day, 1);
+  const yest = shiftCalendarDay(parts.year, parts.month, parts.day, -1);
+  const tomorrow = computeScheduleForYMD(tom.year, tom.month, tom.day, settings);
+  const yesterday = computeScheduleForYMD(yest.year, yest.month, yest.day, settings);
 
   const nowMs = now.getTime();
   const nextIdx = today.entries.findIndex((e) => e.time.getTime() > nowMs);

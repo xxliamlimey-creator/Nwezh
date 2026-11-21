@@ -6,7 +6,7 @@ import {
   type CalculationMethodId,
   type PrayerLocation,
 } from '../../shared/prayerEngine';
-import {WORLD_CITIES, type CityEntry} from '../data/cities';
+import {findNearestCity, WORLD_CITIES, type CityEntry} from '../data/cities';
 import {getTranslations} from '../i18n/translations';
 import {detectDeviceCoordinates} from '../utils/location';
 
@@ -26,6 +26,7 @@ interface RemoteCityResult {
   countryCode: string;
   lat: number;
   lng: number;
+  timezone?: string;
 }
 
 export const CityPickerModal: React.FC<CityPickerModalProps> = ({
@@ -126,14 +127,15 @@ export const CityPickerModal: React.FC<CityPickerModalProps> = ({
   };
 
   const handleSelectRemote = (city: RemoteCityResult) => {
-    const guessedTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const resolvedTz =
+      city.timezone || findNearestCity(city.lat, city.lng).city.timezone;
     onSelectLocation(
       {
         name: city.name,
         country: city.country,
         lat: city.lat,
         lng: city.lng,
-        timezone: guessedTz,
+        timezone: resolvedTz,
         source: 'manual',
       },
       suggestMethodForLocation(city.lat, city.lng, city.countryCode)

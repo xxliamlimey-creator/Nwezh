@@ -335,6 +335,29 @@ async function startServer() {
     }
   });
 
+  async function resolveTimezoneForCoords(
+    lat: number,
+    lng: number
+  ): Promise<string | null> {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1400);
+      const res = await fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&timezone=auto&forecast_days=1`,
+        {signal: controller.signal}
+      );
+      clearTimeout(timer);
+      if (!res.ok) return null;
+      const data = (await res.json()) as {timezone?: string};
+      return typeof data.timezone === 'string' && data.timezone.includes('/')
+        ? data.timezone
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   app.get('/api/cities', async (req, res) => {
     const q = String(req.query.q || '').trim();
     if (q.length < 2) {
@@ -368,19 +391,27 @@ async function startServer() {
         };
       }>;
 
-      const results = data.map((item) => ({
-        name:
-          item.address?.city ||
-          item.address?.town ||
-          item.address?.village ||
-          item.name ||
-          item.display_name?.split(',')[0] ||
-          q,
-        country: item.address?.country || '',
-        countryCode: (item.address?.country_code || '').toUpperCase(),
-        lat: Number(item.lat),
-        lng: Number(item.lon),
-      }));
+      const results = await Promise.all(
+        data.map(async (item) => {
+          const lat = Number(item.lat);
+          const lng = Number(item.lon);
+          const timezone = await resolveTimezoneForCoords(lat, lng);
+          return {
+            name:
+              item.address?.city ||
+              item.address?.town ||
+              item.address?.village ||
+              item.name ||
+              item.display_name?.split(',')[0] ||
+              q,
+            country: item.address?.country || '',
+            countryCode: (item.address?.country_code || '').toUpperCase(),
+            lat,
+            lng,
+            timezone: timezone || undefined,
+          };
+        })
+      );
       res.json({results});
     } catch {
       res.json({results: []});
@@ -396,14 +427,17 @@ async function startServer() {
     }
     try {
       const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=10`;
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'NwezhPWA/1.0 (prayer-times-lookup)',
-          'Accept-Language': 'en',
-        },
-      });
+      const [response, timezone] = await Promise.all([
+        fetch(url, {
+          headers: {
+            'User-Agent': 'NwezhPWA/1.0 (prayer-times-lookup)',
+            'Accept-Language': 'en',
+          },
+        }),
+        resolveTimezoneForCoords(lat, lng),
+      ]);
       if (!response.ok) {
-        res.json({city: null});
+        res.json({city: null, timezone: timezone || undefined});
         return;
       }
       const data = (await response.json()) as {
@@ -432,6 +466,7 @@ async function startServer() {
               countryCode: (data.address?.country_code || '').toUpperCase(),
             }
           : null,
+        timezone: timezone || undefined,
       });
     } catch {
       res.json({city: null});

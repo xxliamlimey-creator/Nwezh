@@ -3,15 +3,47 @@ import {
   DEFAULT_ADJUSTMENTS,
   DEFAULT_ENABLED_PRAYERS,
   getDateKeyInZone,
+  suggestMethodForLocation,
   type AppLanguage,
   type PrayerName,
   type PrayerSettings,
 } from '../../shared/prayerEngine';
+import {findNearestCity, WORLD_CITIES, type CityEntry} from '../data/cities';
 
 const SETTINGS_KEY = 'nwezh.settings.v1';
 const ONBOARDED_KEY = 'nwezh.onboarded.v1';
 const PREVIEW_WEB_APP_KEY = 'nwezh.web_entered.v1';
 const CACHE_KEY = 'nwezh.schedule_cache.v1';
+
+const TIMEZONE_ALIASES: Record<string, string> = {
+  'Asia/Calcutta': 'Asia/Kolkata',
+  'Asia/Arbil': 'Asia/Baghdad',
+  'Europe/Kiev': 'Europe/Kyiv',
+  'Asia/Saigon': 'Asia/Ho_Chi_Minh',
+  'Asia/Rangoon': 'Asia/Yangon',
+  'US/Eastern': 'America/New_York',
+  'US/Central': 'America/Chicago',
+  'US/Pacific': 'America/Los_Angeles',
+  'US/Mountain': 'America/Denver',
+  'GMT': 'Europe/London',
+};
+
+function findCityForTimezone(tz: string): CityEntry | undefined {
+  const canonical = TIMEZONE_ALIASES[tz] || tz;
+  return (
+    WORLD_CITIES.find((c) => c.timezone === canonical) ||
+    WORLD_CITIES.find((c) => c.timezone === tz)
+  );
+}
+
+function isValidTimeZone(tz: string): boolean {
+  try {
+    Intl.DateTimeFormat(undefined, {timeZone: tz});
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface CachedScheduleMap {
   signature: string;
@@ -40,19 +72,27 @@ function detectInitialLanguage(): AppLanguage {
 export function getDefaultSettings(): PrayerSettings {
   const detectedTz =
     typeof Intl !== 'undefined'
-      ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
-      : 'UTC';
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London'
+      : 'Europe/London';
+
+  const matched =
+    findCityForTimezone(detectedTz) ||
+    WORLD_CITIES.find((c) => c.name === 'London')!;
 
   return {
     location: {
-      name: 'London',
-      country: 'United Kingdom',
-      lat: 51.5072,
-      lng: -0.1276,
-      timezone: detectedTz,
+      name: matched.name,
+      country: matched.country,
+      lat: matched.lat,
+      lng: matched.lng,
+      timezone: matched.timezone,
       source: 'manual',
     },
-    method: 'MuslimWorldLeague',
+    method: suggestMethodForLocation(
+      matched.lat,
+      matched.lng,
+      matched.countryCode
+    ),
     asrMethod: 'Shafi',
     highLatitudeRule: 'Auto',
     adjustments: {...DEFAULT_ADJUSTMENTS},
@@ -73,14 +113,49 @@ export function loadSettings(): PrayerSettings {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return defaults;
     const parsed = JSON.parse(raw) as Partial<PrayerSettings>;
+    const mergedLocation = {
+      ...defaults.location,
+      ...(parsed.location || {}),
+    };
+    let mergedMethod = parsed.method || defaults.method;
+
+    // Heal legacy default bug where London coordinates were paired with a non-London timezone
+    if (
+      mergedLocation.source === 'manual' &&
+      mergedLocation.name === 'London' &&
+      Math.abs(mergedLocation.lat - 51.5072) < 0.05 &&
+      mergedLocation.timezone !== 'Europe/London'
+    ) {
+      const matched = findCityForTimezone(mergedLocation.timezone);
+      if (matched) {
+        mergedLocation.name = matched.name;
+        mergedLocation.country = matched.country;
+        mergedLocation.lat = matched.lat;
+        mergedLocation.lng = matched.lng;
+        mergedLocation.timezone = matched.timezone;
+        mergedMethod = suggestMethodForLocation(
+          matched.lat,
+          matched.lng,
+          matched.countryCode
+        );
+      } else {
+        mergedLocation.timezone = 'Europe/London';
+      }
+    }
+
+    if (!mergedLocation.timezone || !isValidTimeZone(mergedLocation.timezone)) {
+      mergedLocation.timezone = findNearestCity(
+        mergedLocation.lat,
+        mergedLocation.lng
+      ).city.timezone;
+    }
+
     return {
       ...defaults,
       ...parsed,
+      method: mergedMethod,
       language: parsed.language || defaults.language,
-      location: {
-        ...defaults.location,
-        ...(parsed.location || {}),
-      },
+      location: mergedLocation,
       adjustments: {
         ...defaults.adjustments,
         ...(parsed.adjustments || {}),

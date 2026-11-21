@@ -4,6 +4,7 @@ import {
   type PrayerName,
   type PrayerSettings,
 } from '../../shared/prayerEngine';
+import {playPrayerCue, unlockAudioPlayback} from '../utils/audioCue';
 
 export type PushSupportState =
   | 'supported'
@@ -122,7 +123,8 @@ export async function showDeviceNotification(
   settings: PrayerSettings,
   prayer: PrayerName,
   tag: string,
-  registration?: ServiceWorkerRegistration | null
+  registration?: ServiceWorkerRegistration | null,
+  silentOverride?: boolean
 ): Promise<boolean> {
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return false;
@@ -132,7 +134,10 @@ export async function showDeviceNotification(
   }
 
   const body = getPrayerArrivalCopy(prayer, settings.language);
-  const silent = settings.notifications.sound === 'off';
+  const silent =
+    typeof silentOverride === 'boolean'
+      ? silentOverride
+      : settings.notifications.sound === 'off';
   const reg = registration ?? (await getReadyRegistration(2500));
 
   if (reg && typeof reg.showNotification === 'function') {
@@ -325,7 +330,6 @@ export function usePushNotifications(
           const {sub, savedToServer} = await subscribeWithServer(settings);
           setIsSubscribed(Boolean(sub && savedToServer));
         } catch {
-          // Local on-device notifications remain available while permission is granted
           setIsSubscribed(false);
         }
 
@@ -384,6 +388,12 @@ export function usePushNotifications(
         return;
       }
 
+      // Synchronously unlock Web Audio + HTMLAudioElement inside the user click
+      // before any async permission prompt or network request.
+      if (settings.notifications.sound !== 'off') {
+        unlockAudioPlayback();
+      }
+
       setIsBusy(true);
       try {
         const perm =
@@ -399,7 +409,9 @@ export function usePushNotifications(
           return;
         }
 
+        const hasSound = settings.notifications.sound !== 'off';
         let registration: ServiceWorkerRegistration | null = null;
+        let deliveredViaPush = false;
 
         // 1. Try true background Web Push end-to-end
         try {
@@ -416,13 +428,12 @@ export function usePushNotifications(
                 body: JSON.stringify({
                   endpoint: json.endpoint,
                   keys: json.keys,
-                  silent: settings.notifications.sound === 'off',
+                  silent: true, // In-page Adhan/custom audio plays right alongside
                   language: settings.language,
                 }),
               }
             );
 
-            // Retry once with a fresh push subscription if the push token expired (404/410/502)
             if (!pushRes.ok && (pushRes.status === 404 || pushRes.status === 502)) {
               const refreshed = await subscribeWithServer(settings, true);
               registration = refreshed.registration;
@@ -436,7 +447,7 @@ export function usePushNotifications(
                     body: JSON.stringify({
                       endpoint: refreshedJson.endpoint,
                       keys: refreshedJson.keys,
-                      silent: settings.notifications.sound === 'off',
+                      silent: true,
                       language: settings.language,
                     }),
                   }
@@ -446,8 +457,7 @@ export function usePushNotifications(
 
             if (pushRes.ok && pushRes.data?.ok) {
               setIsSubscribed(true);
-              setTestMessage('Test push notification sent.');
-              return;
+              deliveredViaPush = true;
             }
           }
         } catch {
@@ -455,18 +465,41 @@ export function usePushNotifications(
         }
 
         // 2. Fallback: deliver a real OS notification via Service Worker / Notification API
-        const shownLocally = await showDeviceNotification(
-          settings,
-          'asr',
-          `nwezh-test-${Date.now()}`,
-          registration
-        );
+        let deliveredLocally = false;
+        if (!deliveredViaPush) {
+          deliveredLocally = await showDeviceNotification(
+            settings,
+            'asr',
+            `nwezh-test-${Date.now()}`,
+            registration,
+            hasSound // Let the selected Adhan / tone / custom audio be the sole sound
+          );
+        }
 
-        if (shownLocally) {
-          setTestMessage('Test notification delivered on this device.');
-        } else {
+        if (!deliveredViaPush && !deliveredLocally) {
           setError(
             'Your browser blocked showing notifications in this view. Open Nwezh directly in Safari or Chrome, or install it to your Home Screen.'
+          );
+          return;
+        }
+
+        // 3. Play the user's selected sound effect, Sheikh Adhan, or custom audio
+        let playedAudio = false;
+        if (hasSound) {
+          playedAudio = await playPrayerCue(settings.notifications.sound);
+        }
+
+        if (deliveredViaPush) {
+          setTestMessage(
+            playedAudio
+              ? 'Test push notification sent with your selected audio.'
+              : 'Test push notification sent.'
+          );
+        } else {
+          setTestMessage(
+            playedAudio
+              ? 'Test notification and selected audio delivered.'
+              : 'Test notification delivered on this device.'
           );
         }
       } catch (err) {

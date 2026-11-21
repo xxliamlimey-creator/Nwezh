@@ -30,8 +30,10 @@ import type {PushStatus} from '../hooks/usePushNotifications';
 import {getTranslations, LANGUAGES} from '../i18n/translations';
 import {
   playPrayerCue,
+  prefetchAdhanAudio,
   stopPrayerCue,
   subscribeAudioState,
+  unlockAudioPlayback,
 } from '../utils/audioCue';
 import {
   deleteCustomSoundFile,
@@ -139,6 +141,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   };
 
   const handleSelectSound = (id: NotificationSoundId) => {
+    unlockAudioPlayback();
     onUpdateSettings({
       ...settings,
       notifications: {...settings.notifications, sound: id},
@@ -146,6 +149,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     if (id === 'off') {
       stopPrayerCue();
     } else {
+      void prefetchAdhanAudio(id);
       void playPrayerCue(id);
     }
   };
@@ -155,9 +159,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     id: NotificationSoundId
   ) => {
     e.stopPropagation();
+    unlockAudioPlayback();
     if (playingSoundId === id) {
       stopPrayerCue();
     } else {
+      void prefetchAdhanAudio(id);
       void playPrayerCue(id);
     }
   };
@@ -539,6 +545,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   key={sound.id}
                   onClick={() => {
                     if (isCustomMissing) {
+                      unlockAudioPlayback();
                       fileInputRef.current?.click();
                     } else {
                       handleSelectSound(sound.id);
@@ -550,6 +557,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
                       if (isCustomMissing) {
+                        unlockAudioPlayback();
                         fileInputRef.current?.click();
                       } else {
                         handleSelectSound(sound.id);
@@ -589,6 +597,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
+                            unlockAudioPlayback();
                             fileInputRef.current?.click();
                           }}
                           className="min-h-[36px] px-3 rounded-lg border border-[#E6E3DC] dark:border-[#262926] text-xs font-medium text-[#141413] dark:text-[#F4F3EF] hover:bg-white dark:hover:bg-[#262926] flex items-center gap-1.5"
@@ -657,14 +666,26 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               ? t.testReminderIOSHint
               : t.testReminderHint}
           </div>
-          <button
-            type="button"
-            disabled={pushStatus.isBusy || pushStatus.support !== 'supported'}
-            onClick={() => void pushStatus.sendTestPush(settings)}
-            className="min-h-[40px] px-4 rounded-xl border border-[#E6E3DC] dark:border-[#262926] text-xs font-medium text-[#141413] dark:text-[#F4F3EF] hover:bg-[#FAF9F6] dark:hover:bg-[#1D201D] disabled:opacity-45 transition-colors whitespace-nowrap shrink-0"
-          >
-            {pushStatus.isBusy ? t.sendingTest : t.sendTestReminder}
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {playingSoundId && (
+              <button
+                type="button"
+                onClick={stopPrayerCue}
+                className="min-h-[40px] px-3.5 rounded-xl border border-[#2F5E4E]/40 dark:border-[#6E9F8B]/40 text-xs font-medium text-[#2F5E4E] dark:text-[#9EC2B2] hover:bg-[#EDF3F0] dark:hover:bg-[#1A2520] transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Square className="w-3 h-3 fill-current" />
+                <span>{t.stopPreview}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={pushStatus.isBusy || pushStatus.support !== 'supported'}
+              onClick={() => void pushStatus.sendTestPush(settings)}
+              className="min-h-[40px] px-4 rounded-xl border border-[#E6E3DC] dark:border-[#262926] text-xs font-medium text-[#141413] dark:text-[#F4F3EF] hover:bg-[#FAF9F6] dark:hover:bg-[#1D201D] disabled:opacity-45 transition-colors whitespace-nowrap"
+            >
+              {pushStatus.isBusy ? t.sendingTest : t.sendTestReminder}
+            </button>
+          </div>
         </div>
 
         {pushStatus.error && (

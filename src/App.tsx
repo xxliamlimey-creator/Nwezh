@@ -114,13 +114,22 @@ export default function App() {
   useEffect(() => {
     if (settings.location.source !== 'auto') return;
     const currentTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (currentTz && currentTz !== settings.location.timezone) {
+    if (
+      currentTz &&
+      (currentTz !== 'UTC' || Math.abs(settings.location.lng) < 12) &&
+      currentTz !== settings.location.timezone
+    ) {
       setSettings((prev) => ({
         ...prev,
         location: {...prev.location, timezone: currentTz},
       }));
     }
-  }, [now, settings.location.source, settings.location.timezone]);
+  }, [
+    now,
+    settings.location.lng,
+    settings.location.source,
+    settings.location.timezone,
+  ]);
 
   // Persist settings, rebuild 30-day offline schedule cache, and sync Web Push
   useEffect(() => {
@@ -156,7 +165,9 @@ export default function App() {
           void showDeviceNotification(
             settings,
             prayer,
-            `nwezh-${dateKey}-${prayer}`
+            `nwezh-${dateKey}-${prayer}`,
+            null,
+            settings.notifications.sound !== 'off'
           );
         }
         window.setTimeout(() => {
@@ -165,6 +176,45 @@ export default function App() {
       }
     }
   }, [now, onboarded, pushStatus.isSubscribed, settings]);
+
+  // Trigger selected Adhan or custom audio if a scheduled Web Push arrives while open
+  useEffect(() => {
+    if (
+      typeof navigator === 'undefined' ||
+      !('serviceWorker' in navigator) ||
+      !onboarded ||
+      !settings.notifications.enabled
+    ) {
+      return;
+    }
+
+    const handleSwMessage = (event: MessageEvent) => {
+      const data = event.data as {type?: string; prayer?: PrayerName} | null;
+      if (data?.type !== 'NWEZH_PUSH_RECEIVED' || !data.prayer) return;
+      const prayer = data.prayer;
+      if (!PRAYER_ORDER.includes(prayer) || !settings.notifications.prayers[prayer]) {
+        return;
+      }
+
+      const dateKey = getDateKeyInZone(new Date(), settings.location.timezone);
+      if (triggeredForegroundRef.current[prayer] === dateKey) return;
+      triggeredForegroundRef.current[prayer] = dateKey;
+
+      if (settings.notifications.sound !== 'off') {
+        void playPrayerCue(settings.notifications.sound);
+      }
+      const message = getPrayerArrivalCopy(prayer, settings.language);
+      setForegroundBanner(message);
+      window.setTimeout(() => {
+        setForegroundBanner((prev) => (prev === message ? null : prev));
+      }, 12000);
+    };
+
+    navigator.serviceWorker.addEventListener('message', handleSwMessage);
+    return () => {
+      navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+    };
+  }, [onboarded, settings]);
 
   const handleEnterWebApp = () => {
     setEnteredWebApp(true);
