@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs';
+import http from 'node:http';
 import {createRequire} from 'node:module';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -431,10 +432,37 @@ async function startServer() {
     }
   });
 
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
     const {createServer: createViteServer} = await import('vite');
+    const disableHmr = process.env.DISABLE_HMR === 'true';
+    const disableHmrPlugin = {
+      name: 'nwezh-disable-hmr-client-ws',
+      enforce: 'post' as const,
+      transform(code: string, id: string) {
+        if (!id.replace(/\\/g, '/').endsWith('vite/dist/client/client.mjs')) {
+          return null;
+        }
+        return code.replace(
+          /const transport = normalizeModuleRunnerTransport\([\s\S]*?\}\)\(\)\);/,
+          'const transport = normalizeModuleRunnerTransport({ async connect() {}, async disconnect() {}, send() {} });'
+        );
+      },
+    };
     const vite = await createViteServer({
-      server: {middlewareMode: true},
+      plugins: disableHmr ? [disableHmrPlugin] : [],
+      server: disableHmr
+        ? {
+            middlewareMode: true,
+            hmr: false,
+            ws: false,
+          }
+        : {
+            middlewareMode: true,
+            hmr: {server: httpServer},
+            ws: {server: httpServer},
+          },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -466,7 +494,7 @@ async function startServer() {
   }, 20_000);
 
   const PORT = 3000;
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Nwezh server listening on http://0.0.0.0:${PORT}`);
   });
 }
